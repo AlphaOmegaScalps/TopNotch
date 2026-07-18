@@ -5,3 +5,5 @@ folium
 streamlit-folium
 gspread
 google-auth
+ortools
+requests
