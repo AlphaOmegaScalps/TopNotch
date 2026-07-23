@@ -11,6 +11,7 @@ import requests
 import time
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
+import streamlit.components.v1 as components
 
 # 1. PAGE SETUP & THEME CONFIGS
 st.set_page_config(page_title="Top Notch Lawn & Tree", layout="wide", initial_sidebar_state="expanded")
@@ -149,6 +150,12 @@ def get_image_html(file_path):
         return f'<img src="data:image/jpeg;base64,{encoded}" style="width:100%; border-radius:8px; margin-bottom:15px;">'
     return None
 
+def get_image_base64(file_path):
+    if os.path.exists(file_path):
+        with open(file_path, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    return ""
+
 # ==========================================
 # 🔌 DATABASE CONNECTION (GOOGLE SHEETS)
 # ==========================================
@@ -162,7 +169,6 @@ def load_sheet_data():
         data = sheet.get_all_records()
         return pd.DataFrame(data), None
     except Exception as e:
-        # LARGER EXPANDED DEMO SAMPLE SIZE ACROSS BREVARD COUNTY
         fallback_jobs = pd.DataFrame([
             {"Time": "7:00 AM", "Customer": "C1-Stop1", "Address": "400 S Washington Ave, Titusville, FL", "Crew": "Crew 1", "Status": "Completed"},
             {"Time": "7:45 AM", "Customer": "C1-Stop2", "Address": "840 Century Medical Dr, Titusville, FL", "Crew": "Crew 1", "Status": "Completed"},
@@ -175,7 +181,6 @@ def load_sheet_data():
             {"Time": "1:00 PM", "Customer": "C1-Stop9", "Address": "300 Cheney Hwy, Titusville, FL", "Crew": "Crew 1", "Status": "Pending"},
             {"Time": "1:45 PM", "Customer": "C1-Stop10", "Address": "100 Riveredge Blvd, Cocoa, FL", "Crew": "Crew 1", "Status": "Pending"},
             
-            # Crew 2 - South Focus
             {"Time": "7:00 AM", "Customer": "C2-Stop1", "Address": "1500 Viera Blvd, Viera, FL", "Crew": "Crew 2", "Status": "Completed"},
             {"Time": "7:45 AM", "Customer": "C2-Stop2", "Address": "1 Country Club Dr, Melbourne, FL", "Crew": "Crew 2", "Status": "Completed"},
             {"Time": "8:30 AM", "Customer": "C2-Stop3", "Address": "4700 Malabar Rd, Palm Bay, FL", "Crew": "Crew 2", "Status": "Pending"},
@@ -197,7 +202,6 @@ jobs_df, connection_error = load_sheet_data()
 
 @st.cache_data(ttl=86400) 
 def geocode_address(address_str):
-    """Quietly finds map pins behind the scenes."""
     headers = {"User-Agent": "TopNotchOperationalMatrixApp/1.0"}
     url = f"https://nominatim.openstreetmap.org/search?q={requests.utils.quote(address_str)}&format=json&limit=1"
     try:
@@ -283,7 +287,7 @@ with st.sidebar:
     
     page = st.radio(
         label="Navigation Links",
-        options=["🟢 Dashboard", "📡 Live Radar", "📋 Jobs", "👥 Customers", "🗺️ Smart Routes", "📅 Schedule"],
+        options=["🟢 Dashboard", "📡 Live Radar", "💼 Sales & Leads", "📋 Jobs", "👥 Customers", "🗺️ Smart Routes", "📅 Schedule", "🧾 Invoices"],
         label_visibility="collapsed",
         key="main_navigation_menu"
     )
@@ -368,6 +372,189 @@ elif clean_page_name == "📡 Live Radar":
     radar_html = '<iframe src="https://www.rainviewer.com/map.html?loc=28.3200,-80.6826,9&oFa=1&oC=1&oU=0&oCS=1&oF=0&oAP=1&c=3&o=80&lm=1&layer=radar&sm=1&sn=1" width="100%" height="650" frameborder="0" style="border:1px solid #1f2a37; border-radius:12px; background-color:#111928;" allowfullscreen></iframe>'
     st.components.v1.html(radar_html, height=660)
 
+elif clean_page_name == "💼 Sales & Leads":
+    st.markdown("<h2>Sales & Lead Pipeline</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='color:#9ca3af;'>Manage local leads, track statuses, and search properties with instant live address suggestions.</p>", unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    LEADS_DB_FILE = "leads_database.csv"
+
+    if os.path.exists(LEADS_DB_FILE):
+        df_leads = pd.read_csv(LEADS_DB_FILE)
+    else:
+        df_leads = pd.DataFrame(columns=["Lead Name", "Address", "Latitude", "Longitude", "Status", "Notes"])
+
+    status_config = {
+        "Appointment Set": {"color": "#06b6d4"},
+        "Callback": {"color": "#eab308"},
+        "Contract Signed": {"color": "#22c55e"},
+        "Customer": {"color": "#0ea5e9"},
+        "Do Not Contact": {"color": "#ef4444"},
+        "Go Back": {"color": "#84cc16"},
+        "Mailing Campaign": {"color": "#10b981"},
+        "No TV": {"color": "#1f2a37"},
+        "Not Home 1": {"color": "#f97316"},
+        "Not Home 2": {"color": "#c2410c"},
+        "Not Interested": {"color": "#991b1b"}
+    }
+
+    form_col, table_map_col = st.columns([1.2, 1.8])
+
+    with form_col:
+        st.markdown("<h4 style='margin-top:0;'>Add New Lead & Database Sync</h4>", unsafe_allow_html=True)
+        
+        if "selected_lead_address" not in st.session_state:
+            st.session_state["selected_lead_address"] = ""
+
+        lead_name = st.text_input("Customer / Lead Name", placeholder="e.g., John Smith")
+        
+        typed_address = st.text_input(
+            "Street Address (Live Lookup)", 
+            value=st.session_state["selected_lead_address"],
+            placeholder="Start typing street address...",
+            key="raw_address_input"
+        )
+        
+        query_to_check = typed_address
+        
+        if query_to_check and query_to_check != st.session_state.get("last_searched_query", ""):
+            st.session_state["last_searched_query"] = query_to_check
+            try:
+                headers = {"User-Agent": "TopNotchOperationalMatrixApp/1.0"}
+                autocomplete_url = f"https://nominatim.openstreetmap.org/search?q={requests.utils.quote(query_to_check)}&format=json&countrycodes=us&viewbox=-81.5,28.6,-80.4,27.8&bounded=0&limit=5&addressdetails=1"
+                resp = requests.get(autocomplete_url, headers=headers, timeout=3).json()
+                st.session_state["address_suggestions"] = resp if resp else []
+            except:
+                st.session_state["address_suggestions"] = []
+
+        if st.session_state.get("address_suggestions") and query_to_check:
+            st.markdown("<p style='font-size:0.8rem; color:#10b981; margin-bottom:4px;'>💡 Click your correct address below to autofill:</p>", unsafe_allow_html=True)
+            for idx, item in enumerate(st.session_state["address_suggestions"]):
+                display_name = item.get("display_name")
+                if st.button(display_name, key=f"sug_btn_{idx}", use_container_width=True):
+                    st.session_state["selected_lead_address"] = display_name
+                    st.session_state["address_suggestions"] = []
+                    st.session_state["last_searched_query"] = ""
+                    # SAFE RERUN HANDLER
+                    if hasattr(st, "rerun"):
+                        st.rerun()
+                    elif hasattr(st, "experimental_rerun"):
+                        st.experimental_rerun()
+                    else:
+                        st.experimental_set_query_params(rerun=time.time())
+
+        final_address_to_save = typed_address
+
+        with st.form("lead_entry_form"):
+            lead_status = st.selectbox("Select Lead Status", options=list(status_config.keys()))
+            lead_notes = st.text_area("Notes / Details", placeholder="Gate code, specific trees or service requested...")
+            
+            submit_btn = st.form_submit_button("Save Lead to Database & Map", use_container_width=True)
+            
+            if submit_btn:
+                if lead_name and final_address_to_save:
+                    coords = geocode_address(final_address_to_save)
+                    if coords:
+                        new_row = pd.DataFrame([{
+                            "Lead Name": lead_name,
+                            "Address": final_address_to_save,
+                            "Latitude": coords[0],
+                            "Longitude": coords[1],
+                            "Status": lead_status,
+                            "Notes": lead_notes
+                        }])
+                        df_leads = pd.concat([df_leads, new_row], ignore_index=True)
+                        df_leads.to_csv(LEADS_DB_FILE, index=False)
+                        
+                        st.session_state["selected_lead_address"] = ""
+                        st.session_state["address_suggestions"] = []
+                        st.success(f"Successfully added lead: {lead_name}!")
+                        if hasattr(st, "rerun"):
+                            st.rerun()
+                        elif hasattr(st, "experimental_rerun"):
+                            st.experimental_rerun()
+                        else:
+                            st.experimental_set_query_params(rerun=time.time())
+                    else:
+                        st.error("Could not geocode the selected address. Please check and try again.")
+                else:
+                    st.warning("Please provide both a Lead Name and a valid Address.")
+
+        st.markdown("---")
+        st.markdown("<h4>📂 Database File Management</h4>", unsafe_allow_html=True)
+        
+        uploaded_leads = st.file_uploader("Upload Leads Database (CSV/Excel)", type=["csv", "xlsx"])
+        if uploaded_leads is not None:
+            if uploaded_leads.name.endswith(".csv"):
+                df_leads = pd.read_csv(uploaded_leads)
+            else:
+                df_leads = pd.read_excel(uploaded_leads)
+            df_leads.to_csv(LEADS_DB_FILE, index=False)
+            st.success("Leads database replaced successfully!")
+            if hasattr(st, "rerun"):
+                st.rerun()
+            elif hasattr(st, "experimental_rerun"):
+                st.experimental_rerun()
+            else:
+                st.experimental_set_query_params(rerun=time.time())
+
+        if not df_leads.empty:
+            csv_export_data = df_leads.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Current Leads Spreadsheet",
+                data=csv_export_data,
+                file_name="top_notch_leads_database.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+    with table_map_col:
+        st.markdown("<h4 style='margin-top:0;'>Territory Sales Map & Filter</h4>", unsafe_allow_html=True)
+        
+        if not df_leads.empty:
+            selected_statuses = st.multiselect(
+                "Filter Map Pins by Status",
+                options=list(status_config.keys()),
+                default=list(status_config.keys())
+            )
+            
+            filtered_leads = df_leads[df_leads["Status"].isin(selected_statuses)]
+            
+            brevard_center = [28.3200, -80.6826]
+            m_leads = folium.Map(location=brevard_center, zoom_start=10, tiles="CartoDB dark_matter")
+            
+            for _, row in filtered_leads.iterrows():
+                if pd.notnull(row["Latitude"]) and pd.notnull(row["Longitude"]):
+                    status_info = status_config.get(row["Status"], {"color": "#3b82f6"})
+                    pin_color = status_info["color"]
+                    
+                    popup_html = f"""
+                        <div style='font-size: 13px; line-height: 1.4; font-family: "Inter", sans-serif;'>
+                            <strong style='color:{pin_color};'>{row['Lead Name']}</strong><br/>
+                            <b>Status:</b> {row['Status']}<br/>
+                            <b>Address:</b> {row['Address']}<br/>
+                            <b>Notes:</b> {row.get('Notes', 'None')}
+                        </div>
+                    """
+                    
+                    folium.CircleMarker(
+                        location=[row["Latitude"], row["Longitude"]],
+                        radius=9,
+                        color=pin_color,
+                        fill=True,
+                        fill_color=pin_color,
+                        fill_opacity=0.9,
+                        weight=2,
+                        tooltip=folium.Tooltip(popup_html, sticky=True)
+                    ).add_to(m_leads)
+            
+            folium_static(m_leads, width=720, height=410)
+            
+            with st.expander("📋 View Full Leads Data Record"):
+                st.dataframe(filtered_leads, use_container_width=True)
+        else:
+            st.info("No leads recorded yet. Use the form on the left to add your first sales lead.")
+
 elif clean_page_name == "🗺️ Smart Routes":
     st.markdown("<h2>Smart Route Fixer</h2>", unsafe_allow_html=True)
     st.markdown("<p style='color:#9ca3af;'>Select a crew below and click the green button to automatically shuffle their job list into the absolute fastest driving order.</p>", unsafe_allow_html=True)
@@ -388,7 +575,6 @@ elif clean_page_name == "🗺️ Smart Routes":
     if show_crew1: selected_crews.append("Crew 1")
     if show_crew2: selected_crews.append("Crew 2")
 
-    # Tracking metrics to show on screen
     total_miles_all_crews = 0.0
     total_hours_all_crews = 0.0
 
@@ -396,43 +582,36 @@ elif clean_page_name == "🗺️ Smart Routes":
         brevard_center = [28.3200, -80.6826]
         m_routes = folium.Map(location=brevard_center, zoom_start=10, tiles="CartoDB dark_matter")
         
-        # Simple crew line styling colors
         crew_colors = {"Crew 1": "#3b82f6", "Crew 2": "#a855f7"}
-        # Stop status colors
         status_colors = {"In Progress": "#f59e0b", "Completed": "#10b981", "Pending": "#4b5563"}
 
         for crew in selected_crews:
             crew_jobs = jobs_df[jobs_df["Crew"] == crew].to_dict(orient="records")
             
-            # Silently process address locations background matrix
             valid_stops = []
             for job in crew_jobs:
                 coords = geocode_address(job["Address"])
                 if coords:
                     job["coords"] = coords
                     valid_stops.append(job)
-                    time.sleep(0.05) # Prevent blasting the server too fast
+                    time.sleep(0.05)
             
             if len(valid_stops) > 1:
                 base_coords = [stop["coords"] for stop in valid_stops]
                 dist_matrix, _, raw_meters, raw_seconds = get_osrm_route_and_matrix(base_coords)
                 
-                # Run the math solver only if they clicked the button
                 if optimize_trigger:
                     optimal_order = solve_or_tools_tsp(dist_matrix)
                     stops = [valid_stops[i] for i in optimal_order]
                 else:
                     stops = valid_stops
                 
-                # Fetch route geometry paths and driving lengths
                 ordered_coords = [stop["coords"] for stop in stops]
                 _, road_path, final_meters, final_seconds = get_osrm_route_and_matrix(ordered_coords)
                 
-                # Accumulate map stats (Convert meters to miles, seconds to hours)
                 total_miles_all_crews += (final_meters * 0.000621371)
                 total_hours_all_crews += (final_seconds / 3600.0)
                 
-                # Draw true street lines
                 folium.PolyLine(
                     locations=road_path,
                     color=crew_colors[crew],
@@ -443,7 +622,6 @@ elif clean_page_name == "🗺️ Smart Routes":
             else:
                 stops = valid_stops
 
-            # Drop easy numbered pins onto the map interface
             for index, stop in enumerate(stops, start=1):
                 marker_color = crew_colors[stop["Crew"]]
                 tooltip_html = f"""
@@ -455,7 +633,6 @@ elif clean_page_name == "🗺️ Smart Routes":
                     </div>
                 """
                 
-                # Give a small colored dot center matching their job completion status
                 inner_status_color = status_colors.get(stop["Status"], "#4b5563")
                 
                 folium.CircleMarker(
@@ -474,79 +651,108 @@ elif clean_page_name == "🗺️ Smart Routes":
     with key_col:
         st.markdown("<h4 style='margin-top:0;'>Route Stats</h4>", unsafe_allow_html=True)
         
-        # Calculate pretty numbers for the employee overview card
         display_miles = round(total_miles_all_crews, 1)
         display_hours = round(total_hours_all_crews, 1)
         
-        # Display simplified statistical performance box cards
         stats_html = f"""
         <div style="background-color: #111928; border: 1px solid #1f2a37; border-radius: 12px; padding: 15px; font-family: 'Inter', sans-serif;">
             <div style="margin-bottom: 15px;">
                 <span style="font-size: 0.75rem; color: #9ca3af; text-transform: uppercase; font-weight:600;">Total Drive Distance</span>
-                <div style="font-size: 1.6rem; color: #ffffff; font-weight: 700; margin-top: 2px;">{display_miles} Miles</div>
+                <div style="font-size: 1.6rem; color: #ffffff; font-weight: 700; margin-top: 2px;">{display_miles} mi</div>
             </div>
-            <div style="margin-bottom: 5px;">
-                <span style="font-size: 0.75rem; color: #9ca3af; text-transform: uppercase; font-weight:600;">Total Time on Road</span>
-                <div style="font-size: 1.6rem; color: #ffffff; font-weight: 700; margin-top: 2px;">{display_hours} Hours</div>
+            <div>
+                <span style="font-size: 0.75rem; color: #9ca3af; text-transform: uppercase; font-weight:600;">Est. Drive Time</span>
+                <div style="font-size: 1.6rem; color: #ffffff; font-weight: 700; margin-top: 2px;">{display_hours} hrs</div>
             </div>
-            {"<hr style='border-color:#1f2a37;'/><span style='color:#10b981; font-size:0.8rem; font-weight:600;'>✅ Order is Fully Optimized</span>" if optimize_trigger else "<hr style='border-color:#1f2a37;'/><span style='color:#9ca3af; font-size:0.8rem;'>❌ Showing un-optimized sheet order</span>"}
         </div>
         """
         st.markdown(stats_html, unsafe_allow_html=True)
-        
-        st.markdown("<br><h4>Map Helper</h4>", unsafe_allow_html=True)
-        # Ensure the string is defined clearly and not interrupted
-        legend_html = """
-        <div style="background-color: #111928; border: 1px solid #1f2a37; border-radius: 12px; padding: 15px; font-family: 'Inter', sans-serif; font-size: 0.85rem;">
-            <b style="color: #9ca3af; font-size: 0.7rem; text-transform: uppercase;">Line Paths</b>
-            <div style="display: flex; align-items: center; margin-top: 6px; margin-bottom: 10px;">
-                <div style="width: 20px; height: 3px; background-color: #3b82f6; margin-right: 8px;"></div>
-                <span style="color: #ffffff;">Crew 1 Route</span>
+
+elif clean_page_name == "🧾 Invoices":
+    st.markdown("<h2>Invoice Generator & Preview</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='color:#9ca3af;'>Create and preview branded professional invoices for your maintenance accounts.</p>", unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    logo_b64 = get_image_base64("logo.jpg") or get_image_base64("logo.png")
+    logo_img_tag = f'<img src="data:image/jpeg;base64,{logo_b64}" style="max-height: 50px;">' if logo_b64 else '<h3 style="margin:0; color:#111928;">Top Notch</h3>'
+
+    col_form, col_preview = st.columns([1, 1.2])
+
+    with col_form:
+        st.markdown("<h4>Invoice Details</h4>", unsafe_allow_html=True)
+        inv_number = st.text_input("Invoice Number", value="INV-2026-001")
+        client_name = st.text_input("Client Name", value="Sample Client / Property")
+        client_address = st.text_input("Client Address", value="123 Main St, Viera, FL")
+        service_desc = st.text_input("Service Description", value="Lawn & Tree Maintenance Service")
+        amount = st.number_input("Amount ($)", value=150.00, step=10.0)
+        tax_rate = st.slider("Tax Rate (%)", 0.0, 10.0, 6.5)
+
+    calculated_tax = amount * (tax_rate / 100.0)
+    total_due = amount + calculated_tax
+
+    invoice_html_string = f"""
+    <div style="background-color: #ffffff; color: #111928; padding: 40px; border-radius: 8px; font-family: 'Inter', sans-serif; border: 1px solid #e5e7eb;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px;">
+            <div>
+                <h2 style="color: #111928 !important; margin: 0; font-size: 24px;">INVOICE</h2>
+                <p style="color: #6b7280; margin: 4px 0 0 0; font-size: 14px;">Invoice #: {inv_number}</p>
             </div>
-            <div style="display: flex; align-items: center; margin-bottom: 15px;">
-                <div style="width: 20px; height: 3px; background-color: #a855f7; margin-right: 8px;"></div>
-                <span style="color: #ffffff;">Crew 2 Route</span>
-            </div>
-            
-            <b style="color: #9ca3af; font-size: 0.7rem; text-transform: uppercase;">Job Status (Center Dot)</b>
-            <div style="display: flex; align-items: center; margin-top: 6px; margin-bottom: 6px;">
-                <div style="width: 10px; height: 10px; background-color: #10b981; border-radius: 50%; margin-right: 8px;"></div>
-                <span style="color: #ffffff;">Done</span>
-            </div>
-            <div style="display: flex; align-items: center; margin-bottom: 6px;">
-                <div style="width: 10px; height: 10px; background-color: #f59e0b; border-radius: 50%; margin-right: 8px;"></div>
-                <span style="color: #ffffff;">At Site Now</span>
-            </div>
-            <div style="display: flex; align-items: center;">
-                <div style="width: 10px; height: 10px; background-color: #4b5563; border-radius: 50%; margin-right: 8px;"></div>
-                <span style="color: #ffffff;">Waiting</span>
+            <div>
+                {logo_img_tag}
             </div>
         </div>
-        """
         
-        # Use components.v1.html to ensure the browser treats it as a rendered block
-        st.components.v1.html(legend_html, height=300)
-
-elif clean_page_name == "📅 Schedule":
-    st.markdown("<h2>Crew Matrix & Dispatch Schedule</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='color:#9ca3af;'>Real-time operational dashboard synchronized with live Google Calendar deployments.</p>", unsafe_allow_html=True)
-    st.markdown("<br>", unsafe_allow_html=True)
-    
-    c_kpi1, c_kpi2, c_kpi3, c_kpi4 = st.columns(4)
-    with c_kpi1:
-        st.markdown('<div class="metric-card"><div class="metric-title">Total Scheduled (Week)</div><div class="metric-value">48 Jobs</div><div class="metric-delta-pos" style="color:#3b82f6;">100% capacity locked</div></div>', unsafe_allow_html=True)
-    with c_kpi2:
-        st.markdown('<div class="metric-card"><div class="metric-title">Tree Removals Pending</div><div class="metric-value">6 Open</div><div class="metric-delta-pos" style="color:#f59e0b;">Requires heavy rigging</div></div>', unsafe_allow_html=True)
-    with c_kpi3:
-        st.markdown('<div class="metric-card"><div class="metric-title">Crew Allocation</div><div class="metric-value">5 / 5 Active</div><div class="metric-delta-pos">↗ All teams dispatched</div></div>', unsafe_allow_html=True)
-    with c_kpi4:
-        st.markdown('<div class="metric-card"><div class="metric-title">Open Time Blocks</div><div class="metric-value">2 Available</div><div class="metric-delta-pos" style="color:#10b981;">Next target open Thursday</div></div>', unsafe_allow_html=True)
+        <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 20px 0;">
         
-    st.markdown("<br>", unsafe_allow_html=True)
-    google_calendar_embed_url = "https://calendar.google.com/calendar/embed?src=en.usa%23holiday%40group.v.calendar.google.com&ctz=America%2FNew_York&mode=MONTH&showTitle=0&showNav=1&showDate=1&showPrint=0&showTabs=1&showCalendars=0&showTz=0"
-    calendar_html = f'<iframe src="{google_calendar_embed_url}" style="border: 1px solid #1f2a37; border-radius: 12px; filter: invert(0.9) hue-rotate(180deg);" width="100%" height="700" frameborder="0" scrolling="no"></iframe>'
-    st.components.v1.html(calendar_html, height=710)
+        <div style="margin-bottom: 20px;">
+            <p style="margin: 0; font-size: 14px; color: #374151;"><strong>Billed To:</strong></p>
+            <p style="margin: 2px 0 0 0; font-size: 14px; color: #111928;">{client_name}</p>
+            <p style="margin: 2px 0 0 0; font-size: 14px; color: #6b7280;">{client_address}</p>
+        </div>
+        
+        <table style="width: 100%; border-collapse: collapse; margin-top: 20px; background-color: #ffffff !important;">
+            <thead>
+                <tr style="border-bottom: 2px solid #e5e7eb; text-align: left;">
+                    <th style="padding: 10px; color: #374151 !important; background-color: #f9fafb !important; font-size: 14px;">Description</th>
+                    <th style="padding: 10px; color: #374151 !important; background-color: #f9fafb !important; font-size: 14px; text-align: right;">Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr style="border-bottom: 1px solid #f3f4f6;">
+                    <td style="padding: 12px; color: #111928 !important; font-size: 14px;">{service_desc}</td>
+                    <td style="padding: 12px; color: #111928 !important; font-size: 14px; text-align: right;">${amount:.2f}</td>
+                </tr>
+            </tbody>
+        </table>
+        
+        <div style="display: flex; justify-content: flex-end; margin-top: 20px;">
+            <div style="width: 250px; font-size: 14px;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 5px; color: #4b5563;">
+                    <span>Subtotal:</span>
+                    <span>${amount:.2f}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 5px; color: #4b5563;">
+                    <span>Tax ({tax_rate}%):</span>
+                    <span>${calculated_tax:.2f}</span>
+                </div>
+                <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 8px 0;">
+                <div style="display: flex; justify-content: space-between; font-weight: bold; color: #111928; font-size: 16px;">
+                    <span>Total Due:</span>
+                    <span>${total_due:.2f}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+    """
 
-else:
-    st.markdown(f"<h2>{clean_page_name[2:]} Management Panel</h2>", unsafe_allow_html=True)
-    st.markdown("<div style='background-color:#111928; border:1px solid #1f2a37; border-radius:12px; padding:30px;'><p style='color:#9ca3af; margin:0;'>📦 Container module frame configured and ready.</p></div>", unsafe_allow_html=True)
+    with col_preview:
+        st.markdown("<h4>Invoice Preview</h4>", unsafe_allow_html=True)
+        components.html(invoice_html_string, height=550, scrolling=True)
+        
+        st.download_button(
+            label="📥 Download Invoice HTML",
+            data=invoice_html_string,
+            file_name=f"{inv_number}.html",
+            mime="text/html",
+            use_container_width=True
+        )
